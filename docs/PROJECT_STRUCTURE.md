@@ -1,6 +1,6 @@
 ## Project structure and file purposes
 
-This backend is a minimal FastAPI template made to expose Python/AI utilities to a Next.js frontend. Below is a concise, file‑by‑file guide explaining what each part does and when you’d edit it.
+This backend is the GPS Simulation System service, built with FastAPI to expose Python utilities to a Next.js frontend. Below is a concise, file‑by‑file guide explaining what each part does and when you’d edit it.
 
 ### How a request flows
 - Client calls an endpoint (for example, POST `/api/ai/wordcount`).

@@ -1,6 +1,6 @@
-# FastAPI Backend Template (GPS Simulation Microservice)
+# GPS Simulation System (FastAPI Microservice)
 
-Minimal FastAPI backend exposing Python logic for a Next.js app (no DB). Includes Excel processing, geocoding (Google Maps), simulation, and route analysis APIs.
+FastAPI backend for the GPS Simulation System, exposing Python logic for a Next.js app (no DB). Includes Excel processing, geocoding (Google Maps), simulation, and route analysis APIs.
 
 ## Quickstart (Windows PowerShell)
 
