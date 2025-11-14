@@ -6,6 +6,12 @@ import os
 from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from api.routers.ai import router as ai_router
+from api.routers.v1_excel import router as excel_router
+from api.routers.v1_geocoding import router as geocoding_router
+from api.routers.v1_simulation import router as simulation_router
+from api.routers.v1_routes import router as routes_router
+from api.routers.v1_utils import router as utils_router
+from api.routers.v1_health import router as health_router
 
 # Environment configuration
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
@@ -79,6 +85,12 @@ async def echo(payload: dict):
 # Mount router
 app.include_router(api_router)
 app.include_router(ai_router, prefix="/api")
+app.include_router(excel_router, prefix="/api")
+app.include_router(geocoding_router, prefix="/api")
+app.include_router(simulation_router, prefix="/api")
+app.include_router(routes_router, prefix="/api")
+app.include_router(utils_router, prefix="/api")
+app.include_router(health_router, prefix="/api")
 
 
 if __name__ == "__main__":
