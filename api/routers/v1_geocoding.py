@@ -1,7 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from api.schemas.geocoding_schemas import GeocodeRequest, BatchGeocodeRequest
 from services.geocoding_service import geocode_address, batch_geocode
-import os
 import time
 
 
@@ -11,9 +10,9 @@ router = APIRouter(prefix="/v1/geocoding", tags=["geocoding"])
 @router.post("/geocode")
 async def geocode(req: GeocodeRequest):
     start = time.time()
-    api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+    api_key = req.api_key
     if not api_key:
-        raise HTTPException(status_code=500, detail="Google Maps API key not configured")
+        raise HTTPException(status_code=400, detail="api_key is required in request body")
     result = geocode_address(req.address, api_key, req.language, req.region)
     elapsed = int((time.time() - start) * 1000)
     if not result.get("success"):
@@ -68,9 +67,9 @@ async def geocode(req: GeocodeRequest):
 @router.post("/batch")
 async def batch(req: BatchGeocodeRequest):
     start = time.time()
-    api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+    api_key = req.api_key
     if not api_key:
-        raise HTTPException(status_code=500, detail="Google Maps API key not configured")
+        raise HTTPException(status_code=400, detail="api_key is required in request body")
     items = [item.model_dump() for item in req.addresses]
     results = batch_geocode(items, api_key, req.language, req.region)
     elapsed = int((time.time() - start) * 1000)
