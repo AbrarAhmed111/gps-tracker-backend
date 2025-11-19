@@ -30,9 +30,11 @@ class PositionRequest(BaseModel):
 	waypoints: List[WaypointInput]
 	last_known_position: Optional[VehiclePosition] = None
 	interpolation_method: str = "linear"
+	api_key: Optional[str] = None
 
 
 class BatchPositionsRequest(BaseModel):
 	current_time: datetime
 	vehicles: List[PositionRequest]
 	interpolation_method: str = "linear"
+	api_key: Optional[str] = None

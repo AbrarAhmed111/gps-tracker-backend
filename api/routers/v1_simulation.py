@@ -12,7 +12,7 @@ router = APIRouter(prefix="/v1/simulation", tags=["simulation"])
 async def calculate_position(req: PositionRequest):
     start = time.time()
     waypoints = [w.model_dump() for w in req.waypoints]
-    result = simulate_position(waypoints, req.current_time)
+    result = simulate_position(waypoints, req.current_time, api_key=req.api_key)
     return {
         "success": True,
         "processing_time_ms": int((time.time() - start) * 1000),
@@ -30,7 +30,7 @@ async def calculate_positions_batch(req: BatchPositionsRequest):
         waypoints = [w.model_dump() for w in v.waypoints]
         outputs.append({
             "vehicle_id": v.vehicle_id,
-            **simulate_position(waypoints, v.current_time),
+            **simulate_position(waypoints, v.current_time, api_key=v.api_key or req.api_key),
         })
     summary = {
         "moving": sum(1 for o in outputs if o.get("status") == "moving"),

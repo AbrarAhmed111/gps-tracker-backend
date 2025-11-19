@@ -1,7 +1,19 @@
 from typing import Dict, Any, List, Tuple, Optional
 from datetime import datetime
+import googlemaps
+from googlemaps.convert import decode_polyline
 from utils.geo_math import haversine_distance_km, calculate_bearing, calculate_speed_kmh, heading_from_bearing
 from services.interpolation_service import linear_interpolation
+
+_gmaps_clients: Dict[str, googlemaps.Client] = {}
+
+
+def _get_gmaps_client(api_key: str) -> googlemaps.Client:
+    client = _gmaps_clients.get(api_key)
+    if client is None:
+        client = googlemaps.Client(key=api_key)
+        _gmaps_clients[api_key] = client
+    return client
 
 
 def _find_current_segment(waypoints: List[Dict[str, Any]], current_time: datetime) -> Optional[Tuple[int, Dict[str, Any], Dict[str, Any], float]]:
@@ -28,7 +40,66 @@ def _interpolate_position(w1: Dict[str, Any], w2: Dict[str, Any], progress: floa
     return {"latitude": lat, "longitude": lng}
 
 
-def simulate_position(waypoints: List[Dict[str, Any]], current_time: datetime) -> Dict[str, Any]:
+def _road_path(w1: Dict[str, Any], w2: Dict[str, Any], api_key: Optional[str]) -> Optional[List[Dict[str, float]]]:
+    if not api_key:
+        return None
+    try:
+        client = _get_gmaps_client(api_key)
+        resp = client.directions(
+            (w1["latitude"], w1["longitude"]),
+            (w2["latitude"], w2["longitude"]),
+            mode="driving",
+            alternatives=False,
+            departure_time=w1.get("timestamp"),
+        )
+        if not resp:
+            return None
+        overview = resp[0].get("overview_polyline", {})
+        pts = overview.get("points")
+        if not pts:
+            return None
+        decoded = decode_polyline(pts)
+        if not decoded:
+            return None
+        return [{"latitude": p["lat"], "longitude": p["lng"]} for p in decoded]
+    except Exception:
+        return None
+
+
+def _position_along_path(path: List[Dict[str, float]], progress: float) -> Tuple[Dict[str, float], float, float]:
+    if len(path) < 2:
+        last = path[-1] if path else {"latitude": 0.0, "longitude": 0.0}
+        return last, 0.0, 0.0
+    segments: List[Tuple[float, Dict[str, float], Dict[str, float]]] = []
+    total_distance = 0.0
+    for i in range(1, len(path)):
+        start = path[i - 1]
+        end = path[i]
+        dist = haversine_distance_km(start["latitude"], start["longitude"], end["latitude"], end["longitude"])
+        segments.append((dist, start, end))
+        total_distance += dist
+    if total_distance <= 0:
+        last = path[-1]
+        return last, 0.0, 0.0
+    target_distance = max(0.0, min(1.0, progress)) * total_distance
+    traveled = 0.0
+    current_position = path[0]
+    for dist, start, end in segments:
+        if dist <= 0:
+            current_position = end
+            continue
+        if traveled + dist >= target_distance:
+            ratio = (target_distance - traveled) / dist
+            lat = start["latitude"] + (end["latitude"] - start["latitude"]) * ratio
+            lng = start["longitude"] + (end["longitude"] - start["longitude"]) * ratio
+            current_position = {"latitude": lat, "longitude": lng}
+            return current_position, total_distance, traveled + ratio * dist
+        traveled += dist
+        current_position = end
+    return current_position, total_distance, total_distance
+
+
+def simulate_position(waypoints: List[Dict[str, Any]], current_time: datetime, api_key: Optional[str] = None) -> Dict[str, Any]:
     if not waypoints:
         return {"status": "inactive"}
     waypoints = [w for w in waypoints if w.get("timestamp") is not None]
@@ -58,8 +129,18 @@ def simulate_position(waypoints: List[Dict[str, Any]], current_time: datetime) -
             "position": {"latitude": first["latitude"], "longitude": first["longitude"]},
         }
     idx, w1, w2, progress = seg
-    pos = _interpolate_position(w1, w2, progress)
-    distance_km = haversine_distance_km(w1["latitude"], w1["longitude"], w2["latitude"], w2["longitude"])
+    pos = None
+    distance_km = None
+    distance_completed_km = None
+    road_path = _road_path(w1, w2, api_key)
+    if road_path:
+        pos, distance_km, distance_completed_km = _position_along_path(road_path, progress)
+    if pos is None:
+        pos = _interpolate_position(w1, w2, progress)
+    if distance_km is None or distance_km <= 0:
+        distance_km = haversine_distance_km(w1["latitude"], w1["longitude"], w2["latitude"], w2["longitude"])
+    if distance_completed_km is None:
+        distance_completed_km = distance_km * progress
     hours = (w2["timestamp"] - w1["timestamp"]).total_seconds() / 3600.0
     speed_kmh = calculate_speed_kmh(distance_km, hours)
     bearing = calculate_bearing(w1["latitude"], w1["longitude"], w2["latitude"], w2["longitude"])
@@ -101,8 +182,8 @@ def simulate_position(waypoints: List[Dict[str, Any]], current_time: datetime) -
             "minutes_to_destination": round((last["timestamp"] - current_time).total_seconds() / 60.0, 2),
         },
         "distance": {
-            "to_next_waypoint_km": round(distance_km * (1 - progress), 3),
-            "to_next_waypoint_m": int(distance_km * 1000 * (1 - progress)),
+            "to_next_waypoint_km": round(max(distance_km - distance_completed_km, 0.0), 3),
+            "to_next_waypoint_m": int(max(distance_km - distance_completed_km, 0.0) * 1000),
             "total_remaining_km": None,
             "total_completed_km": None,
         },
