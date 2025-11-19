@@ -6,7 +6,7 @@ FastAPI backend for the GPS Simulation System, exposing Python logic for a Next.
 
 1) Create and activate venv, install deps
 ```powershell
-cd D:\TORRENT\Devwebies\gps-tracker-backend
+cd path\to\gps-tracker-backend
 py -m venv .venv
 .\.venv\Scripts\Activate
 py -m pip install --upgrade pip
