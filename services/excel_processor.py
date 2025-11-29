@@ -8,7 +8,7 @@ from utils.geo_math import haversine_distance_km
 from datetime import datetime
 
 
-REQUIRED_COLUMNS = ["timestamp", "latitude", "longitude"]
+REQUIRED_COLUMNS = ["timestamp", "day_of_week", "address"]
 
 
 def read_excel_from_base64(file_content_b64: str) -> pd.DataFrame:
@@ -76,7 +76,13 @@ def process_excel(file_content_b64: str, file_name: str, options: Optional[Dict[
     warnings = []
     required_ok = has_required_columns(df.columns, REQUIRED_COLUMNS)
     if not required_ok:
-        errors.append({"severity": "error", "field": "columns", "message": "Missing required columns"})
+        missing = [col for col in REQUIRED_COLUMNS if col.lower() not in [c.lower() for c in df.columns]]
+        errors.append({"severity": "error", "field": "columns", "message": f"Missing required columns: {', '.join(missing)}"})
+    
+    # Check if addresses need geocoding (coordinates optional)
+    has_coords = "latitude" in df.columns and "longitude" in df.columns
+    if not has_coords and "address" not in df.columns:
+        errors.append({"severity": "error", "field": "columns", "message": "Either coordinates (latitude/longitude) or address must be provided"})
 
     # Day handling
     has_day = "day_of_week" in df.columns
