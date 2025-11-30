@@ -71,22 +71,53 @@ async def batch_geocode(req: BatchGeocodeRequest):
             response.raise_for_status()
             data = response.json()
             
-            if data.get("status") == "OK":
+            status = data.get("status")
+            if status == "OK":
                 result = data.get("results", [{}])[0]
-                location = result.get("geometry", {}).get("location", {})
-                results.append({
-                    "id": item.id,
-                    "success": True,
-                    "latitude": location.get("lat"),
-                    "longitude": location.get("lng"),
-                    "formatted_address": result.get("formatted_address"),
-                    "raw": result,
-                })
+                if not result:
+                    results.append({
+                        "id": item.id,
+                        "success": False,
+                        "error": "No results returned",
+                        "address": item.address,
+                    })
+                else:
+                    location = result.get("geometry", {}).get("location", {})
+                    if not location or "lat" not in location or "lng" not in location:
+                        results.append({
+                            "id": item.id,
+                            "success": False,
+                            "error": "Invalid location data",
+                            "address": item.address,
+                        })
+                    else:
+                        results.append({
+                            "id": item.id,
+                            "success": True,
+                            "latitude": location.get("lat"),
+                            "longitude": location.get("lng"),
+                            "formatted_address": result.get("formatted_address"),
+                            "raw": result,
+                            "address": item.address,
+                        })
             else:
+                # Provide more detailed error messages
+                error_msg = status
+                if status == "ZERO_RESULTS":
+                    error_msg = "Address not found - please check spelling and completeness"
+                elif status == "OVER_QUERY_LIMIT":
+                    error_msg = "Geocoding API quota exceeded"
+                elif status == "REQUEST_DENIED":
+                    error_msg = "Geocoding API access denied - check API key permissions"
+                elif status == "INVALID_REQUEST":
+                    error_msg = "Invalid address format"
+                
                 results.append({
                     "id": item.id,
                     "success": False,
-                    "error": data.get("status"),
+                    "error": error_msg,
+                    "status": status,
+                    "address": item.address,
                 })
         except Exception as e:
             results.append({
