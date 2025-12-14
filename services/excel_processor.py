@@ -1,14 +1,20 @@
 import base64
 import io
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional
+
 import pandas as pd
+
 from utils.checksum import compute_checksum_base64, checksum_text_md5
-from utils.validators import has_required_columns, coordinates_valid
 from utils.geo_math import haversine_distance_km
-from datetime import datetime
+from utils.validators import coordinates_valid, has_required_columns
 
 
 REQUIRED_COLUMNS = ["timestamp", "day_of_week", "address"]
+
+# We anchor all weekly routes to a synthetic, never-changing week so that
+# playback is date-independent (e.g., Monday = 2024-01-01, Tuesday = 2024-01-02, etc).
+ANCHOR_WEEK_START = datetime(2024, 1, 1, tzinfo=timezone.utc)  # Monday
 
 
 def read_excel_from_base64(file_content_b64: str) -> pd.DataFrame:
@@ -50,6 +56,29 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _anchor_timestamp(ts: Optional[pd.Timestamp], day_of_week: int) -> Optional[datetime]:
+    """
+    Convert any provided timestamp into an anchor-week datetime so that routes
+    repeat weekly without depending on real calendar dates. The date portion is
+    replaced with a synthetic week (Mon Jan 1, 2024 as day 0).
+    """
+    if ts is None or pd.isna(ts):
+        return None
+    try:
+        dow = int(day_of_week)
+    except Exception:
+        dow = 0
+    dow = max(0, min(6, dow))
+    dt = ts.to_pydatetime()
+    anchor_base = ANCHOR_WEEK_START + timedelta(days=dow)
+    return anchor_base.replace(
+        hour=dt.hour,
+        minute=dt.minute,
+        second=dt.second,
+        microsecond=dt.microsecond,
+    )
+
+
 def _compute_distance_stats(rows: List[Dict[str, Any]]) -> Dict[str, float]:
     if len(rows) < 2:
         return {"total_distance_km": 0.0}
@@ -78,11 +107,6 @@ def process_excel(file_content_b64: str, file_name: str, options: Optional[Dict[
     if not required_ok:
         missing = [col for col in REQUIRED_COLUMNS if col.lower() not in [c.lower() for c in df.columns]]
         errors.append({"severity": "error", "field": "columns", "message": f"Missing required columns: {', '.join(missing)}"})
-    
-    # Check if addresses need geocoding (coordinates optional)
-    has_coords = "latitude" in df.columns and "longitude" in df.columns
-    if not has_coords and "address" not in df.columns:
-        errors.append({"severity": "error", "field": "columns", "message": "Either coordinates (latitude/longitude) or address must be provided"})
 
     # Day handling
     has_day = "day_of_week" in df.columns
@@ -91,12 +115,18 @@ def process_excel(file_content_b64: str, file_name: str, options: Optional[Dict[
     days_found = sorted([int(d) for d in df["day_of_week"].dropna().unique().tolist()])
     waypoints_per_day = {str(int(d)): int((df["day_of_week"] == d).sum()) for d in days_found}
 
-    # Date range
+    # Date range (anchor-week) – collect anchored timestamps per row to preserve ordering across days
+    anchored_ts_values: List[datetime] = []
     if "timestamp" in df.columns and df["timestamp"].notna().any():
-        ts_non_null = df["timestamp"].dropna()
-        date_range = {"earliest": ts_non_null.min().isoformat(), "latest": ts_non_null.max().isoformat()}
-    else:
-        date_range = None
+        for _, row in df.iterrows():
+            anchored_ts = _anchor_timestamp(row.get("timestamp"), row.get("day_of_week", 0))
+            if anchored_ts:
+                anchored_ts_values.append(anchored_ts)
+    date_range = {
+        "earliest": min(anchored_ts_values).isoformat() if anchored_ts_values else None,
+        "latest": max(anchored_ts_values).isoformat() if anchored_ts_values else None,
+        "anchor_week": True,
+    }
 
     # Parking info
     parking_points_detected = int(df["is_parking"].sum()) if "is_parking" in df.columns else 0
@@ -125,9 +155,10 @@ def process_excel(file_content_b64: str, file_name: str, options: Optional[Dict[
         day_df = df[df["day_of_week"] == d].reset_index(drop=True)
         items: List[Dict[str, Any]] = []
         for i, row in day_df.iterrows():
+            anchored_ts = _anchor_timestamp(row.get("timestamp"), row.get("day_of_week", d))
             items.append({
                 "sequence": int(row.get("sequence", i + 1)),
-                "timestamp": (row["timestamp"].isoformat() if isinstance(row.get("timestamp"), pd.Timestamp) and pd.notna(row.get("timestamp")) else None),
+                "timestamp": anchored_ts.isoformat() if anchored_ts else None,
                 "day_of_week": int(row.get("day_of_week", d)),
                 "latitude": float(row.get("latitude")) if pd.notna(row.get("latitude")) else None,
                 "longitude": float(row.get("longitude")) if pd.notna(row.get("longitude")) else None,
@@ -144,12 +175,12 @@ def process_excel(file_content_b64: str, file_name: str, options: Optional[Dict[
     for _, row in df.sort_values(by=["timestamp"], na_position="last").iterrows():
         lat = row.get("latitude")
         lng = row.get("longitude")
-        ts = row.get("timestamp")
+        ts = _anchor_timestamp(row.get("timestamp"), row.get("day_of_week", 0))
         if pd.notna(lat) and pd.notna(lng):
             rows_for_stats.append({
                 "latitude": float(lat),
                 "longitude": float(lng),
-                "timestamp": ts.to_pydatetime() if isinstance(ts, pd.Timestamp) else None,
+                "timestamp": ts,
             })
     stats = _compute_distance_stats(rows_for_stats)
 
