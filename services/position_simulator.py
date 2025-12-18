@@ -54,14 +54,30 @@ def _road_path(w1: Dict[str, Any], w2: Dict[str, Any], api_key: Optional[str]) -
         )
         if not resp:
             return None
-        overview = resp[0].get("overview_polyline", {})
-        pts = overview.get("points")
-        if not pts:
-            return None
-        decoded = decode_polyline(pts)
-        if not decoded:
-            return None
-        return [{"latitude": p["lat"], "longitude": p["lng"]} for p in decoded]
+        # Prefer full step geometry if available, otherwise fallback to overview polyline
+        route = resp[0]
+        path_points: List[Dict[str, float]] = []
+        legs = route.get("legs") or []
+        for leg in legs:
+            steps = leg.get("steps") or []
+            for step in steps:
+                step_poly = step.get("polyline", {})
+                pts = step_poly.get("points")
+                if not pts:
+                    continue
+                decoded_step = decode_polyline(pts)
+                for p in decoded_step:
+                    path_points.append({"latitude": p["lat"], "longitude": p["lng"]})
+        if not path_points:
+            overview = route.get("overview_polyline", {})
+            pts = overview.get("points")
+            if not pts:
+                return None
+            decoded = decode_polyline(pts)
+            if not decoded:
+                return None
+            path_points = [{"latitude": p["lat"], "longitude": p["lng"]} for p in decoded]
+        return path_points if path_points else None
     except Exception:
         return None
 
@@ -141,7 +157,8 @@ def simulate_position(waypoints: List[Dict[str, Any]], current_time: datetime, a
         distance_km = haversine_distance_km(w1["latitude"], w1["longitude"], w2["latitude"], w2["longitude"])
     if distance_completed_km is None:
         distance_completed_km = distance_km * progress
-    hours = (w2["timestamp"] - w1["timestamp"]).total_seconds() / 3600.0
+    segment_seconds = (w2["timestamp"] - w1["timestamp"]).total_seconds()
+    hours = segment_seconds / 3600.0 if segment_seconds else 0
     speed_kmh = calculate_speed_kmh(distance_km, hours)
     bearing = calculate_bearing(w1["latitude"], w1["longitude"], w2["latitude"], w2["longitude"])
     heading = heading_from_bearing(bearing)
@@ -169,6 +186,9 @@ def simulate_position(waypoints: List[Dict[str, Any]], current_time: datetime, a
                 "segment_progress_percent": round(progress * 100.0, 2),
                 "from_position": {"latitude": w1["latitude"], "longitude": w1["longitude"], "timestamp": w1["timestamp"].isoformat()},
                 "to_position": {"latitude": w2["latitude"], "longitude": w2["longitude"], "timestamp": w2["timestamp"].isoformat()},
+                "segment_distance_km": round(distance_km, 5),
+                "segment_duration_seconds": segment_seconds,
+                "road_path": road_path or None,
             },
             "overall_progress_percent": round(overall_progress, 2),
             "completed_waypoints": completed_waypoints,
@@ -180,6 +200,7 @@ def simulate_position(waypoints: List[Dict[str, Any]], current_time: datetime, a
             "final_destination": last["timestamp"].isoformat(),
             "minutes_to_next_waypoint": round((w2["timestamp"] - current_time).total_seconds() / 60.0, 2),
             "minutes_to_destination": round((last["timestamp"] - current_time).total_seconds() / 60.0, 2),
+            "seconds_to_next_waypoint": round((w2["timestamp"] - current_time).total_seconds(), 2),
         },
         "distance": {
             "to_next_waypoint_km": round(max(distance_km - distance_completed_km, 0.0), 3),
