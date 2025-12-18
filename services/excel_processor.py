@@ -1,20 +1,14 @@
 import base64
 import io
-from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional
-
 import pandas as pd
-
 from utils.checksum import compute_checksum_base64, checksum_text_md5
+from utils.validators import has_required_columns, coordinates_valid
 from utils.geo_math import haversine_distance_km
-from utils.validators import coordinates_valid, has_required_columns
+from datetime import datetime, timedelta
 
 
 REQUIRED_COLUMNS = ["timestamp", "day_of_week", "address"]
-
-# We anchor all weekly routes to a synthetic, never-changing week so that
-# playback is date-independent (e.g., Monday = 2024-01-01, Tuesday = 2024-01-02, etc).
-ANCHOR_WEEK_START = datetime(2024, 1, 1, tzinfo=timezone.utc)  # Monday
 
 
 def read_excel_from_base64(file_content_b64: str) -> pd.DataFrame:
@@ -56,29 +50,6 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _anchor_timestamp(ts: Optional[pd.Timestamp], day_of_week: int) -> Optional[datetime]:
-    """
-    Convert any provided timestamp into an anchor-week datetime so that routes
-    repeat weekly without depending on real calendar dates. The date portion is
-    replaced with a synthetic week (Mon Jan 1, 2024 as day 0).
-    """
-    if ts is None or pd.isna(ts):
-        return None
-    try:
-        dow = int(day_of_week)
-    except Exception:
-        dow = 0
-    dow = max(0, min(6, dow))
-    dt = ts.to_pydatetime()
-    anchor_base = ANCHOR_WEEK_START + timedelta(days=dow)
-    return anchor_base.replace(
-        hour=dt.hour,
-        minute=dt.minute,
-        second=dt.second,
-        microsecond=dt.microsecond,
-    )
-
-
 def _compute_distance_stats(rows: List[Dict[str, Any]]) -> Dict[str, float]:
     if len(rows) < 2:
         return {"total_distance_km": 0.0}
@@ -88,6 +59,31 @@ def _compute_distance_stats(rows: List[Dict[str, Any]]) -> Dict[str, float]:
         if coordinates_valid(p1["latitude"], p1["longitude"]) and coordinates_valid(p2["latitude"], p2["longitude"]):
             total += haversine_distance_km(p1["latitude"], p1["longitude"], p2["latitude"], p2["longitude"])
     return {"total_distance_km": total}
+
+
+# Anchor timestamps to a fixed "reference week" so routes repeat weekly and ignore real dates
+ANCHOR_MONDAY = datetime(2024, 1, 1)  # This date is a Monday; only time + weekday matter
+
+
+def _anchor_timestamp_to_week(ts: Optional[pd.Timestamp], day_of_week: int) -> Optional[datetime]:
+    """
+    Convert any provided timestamp (with or without a date) into an anchored datetime
+    for a fixed reference week. The actual calendar date from the upload is ignored;
+    only time-of-day and day_of_week are kept so routes repeat every week.
+    """
+    if ts is None or pd.isna(ts):
+        return None
+    # normalize timezone to naive local
+    if ts.tzinfo is not None:
+        ts = ts.tz_convert(None)
+    base = ANCHOR_MONDAY + timedelta(days=int(day_of_week or 0))
+    anchored = base.replace(
+        hour=ts.hour,
+        minute=ts.minute,
+        second=ts.second,
+        microsecond=ts.microsecond,
+    )
+    return anchored
 
 
 def process_excel(file_content_b64: str, file_name: str, options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -115,18 +111,8 @@ def process_excel(file_content_b64: str, file_name: str, options: Optional[Dict[
     days_found = sorted([int(d) for d in df["day_of_week"].dropna().unique().tolist()])
     waypoints_per_day = {str(int(d)): int((df["day_of_week"] == d).sum()) for d in days_found}
 
-    # Date range (anchor-week) – collect anchored timestamps per row to preserve ordering across days
-    anchored_ts_values: List[datetime] = []
-    if "timestamp" in df.columns and df["timestamp"].notna().any():
-        for _, row in df.iterrows():
-            anchored_ts = _anchor_timestamp(row.get("timestamp"), row.get("day_of_week", 0))
-            if anchored_ts:
-                anchored_ts_values.append(anchored_ts)
-    date_range = {
-        "earliest": min(anchored_ts_values).isoformat() if anchored_ts_values else None,
-        "latest": max(anchored_ts_values).isoformat() if anchored_ts_values else None,
-        "anchor_week": True,
-    }
+    # Date range is not meaningful now that we anchor to a synthetic week
+    date_range = None
 
     # Parking info
     parking_points_detected = int(df["is_parking"].sum()) if "is_parking" in df.columns else 0
@@ -155,7 +141,9 @@ def process_excel(file_content_b64: str, file_name: str, options: Optional[Dict[
         day_df = df[df["day_of_week"] == d].reset_index(drop=True)
         items: List[Dict[str, Any]] = []
         for i, row in day_df.iterrows():
-            anchored_ts = _anchor_timestamp(row.get("timestamp"), row.get("day_of_week", d))
+            anchored_ts = None
+            if isinstance(row.get("timestamp"), pd.Timestamp) and pd.notna(row.get("timestamp")):
+                anchored_ts = _anchor_timestamp_to_week(row.get("timestamp"), int(row.get("day_of_week", d)))
             items.append({
                 "sequence": int(row.get("sequence", i + 1)),
                 "timestamp": anchored_ts.isoformat() if anchored_ts else None,
@@ -172,16 +160,18 @@ def process_excel(file_content_b64: str, file_name: str, options: Optional[Dict[
 
     # Distance statistics (overall)
     rows_for_stats: List[Dict[str, Any]] = []
-    for _, row in df.sort_values(by=["timestamp"], na_position="last").iterrows():
+    for _, row in df.iterrows():
         lat = row.get("latitude")
         lng = row.get("longitude")
-        ts = _anchor_timestamp(row.get("timestamp"), row.get("day_of_week", 0))
+        ts = row.get("timestamp")
+        anchored_ts = _anchor_timestamp_to_week(ts, int(row.get("day_of_week", 0))) if isinstance(ts, pd.Timestamp) else None
         if pd.notna(lat) and pd.notna(lng):
             rows_for_stats.append({
                 "latitude": float(lat),
                 "longitude": float(lng),
-                "timestamp": ts,
+                "timestamp": anchored_ts,
             })
+    rows_for_stats = sorted(rows_for_stats, key=lambda r: r.get("timestamp") or datetime.min)
     stats = _compute_distance_stats(rows_for_stats)
 
     route_summary = {
